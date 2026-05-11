@@ -48,7 +48,7 @@
       "package.json"
     ],
     "asar": true,
-    "npmRebuild": true,
+    "npmRebuild": false,
     "directories": {
       "buildResources": "build",
       "output": "release"
