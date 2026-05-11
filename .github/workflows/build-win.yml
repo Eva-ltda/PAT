@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: read
     env:
@@ -19,17 +19,19 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Build renderer
         run: npm run build:renderer
 
       - name: Build Windows executables
-        run: npx electron-builder --win --publish never
+        env:
+          DEBUG: "electron-builder,electron-rebuild"
+        run: npx electron-builder --win --x64 --publish never --debug
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
