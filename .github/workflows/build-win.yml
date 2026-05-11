@@ -28,10 +28,13 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
+      - name: Show electron-builder version
+        run: npx electron-builder --version
+
       - name: Build Windows executables
         env:
           DEBUG: "electron-builder,electron-rebuild"
-        run: npx electron-builder --win --x64 --publish never --debug
+        run: npx electron-builder --win --x64 --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
