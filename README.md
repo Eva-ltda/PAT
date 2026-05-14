@@ -1,37 +1,37 @@
-# Dashboard Arduino (Electron + React + Vite)
+# Dashboard Arduino
 
-Dashboard industrial em tempo real para leitura via Serial (USB/COM) e visualização com UI em React.
+Aplicativo desktop (Windows) para monitoramento industrial em tempo real de sensores conectados a Arduino via Serial USB (COM). O foco do projeto é oferecer uma interface moderna, responsiva e “de chão de fábrica”, com leitura contínua, histórico e exportação de dados.
 
-## Requisitos
+## Principais recursos
 
-- Windows
-- Node.js (recomendado Node 20 LTS)
+- Monitoramento em tempo real com status de conexão e indicação de erros.
+- Seleção manual de porta serial (COM) pela interface, com listagem de portas disponíveis.
+- Compatível com dados enviados como CSV e também com linhas “humanas” do Arduino.
+- Histórico de medições e exportação em CSV compatível com Excel.
+- Distribuição em Windows como instalador (NSIS) e executável portátil (portable), sem dependência de Wi‑Fi para rodar localmente.
 
-## Rodar em desenvolvimento (PowerShell)
+## Dados monitorados
 
-Se o PowerShell bloquear `npm.ps1`, use `npm.cmd`.
+O dashboard trabalha com as seguintes variáveis (quando disponíveis):
 
-```powershell
-cd D:\PAT
-npm.cmd install --include=dev --no-audit --no-fund
-npm.cmd run dev
-```
+- T1, T2, T3 (termopares)
+- TA (temperatura ambiente)
+- U (umidade)
+- hPa (pressão)
+- VOC (qualidade de ar/gases)
 
-## Build Windows (local)
+## Arquitetura (visão geral)
 
-```powershell
-cd D:\PAT
-npm.cmd install --include=dev --no-audit --no-fund
-npm.cmd run build:renderer
-npx electron-builder --win --x64 --publish never
-```
+- Electron (processo principal): gerencia a conexão serial, faz parsing dos dados e publica eventos para a UI.
+- Preload (contextBridge): expõe uma API segura para o renderer (listar portas, selecionar porta, exportar CSV).
+- React + Vite + Tailwind: camada de visualização do dashboard e componentes.
+- Socket.IO local: canal de eventos em tempo real entre o processo principal e a interface.
+- serialport: integração com portas COM no Windows.
 
-Os artefatos são gerados em `release/`.
+## Build e entrega
 
-## CI (GitHub Actions)
+O build do Windows é realizado por `electron-builder` e também via GitHub Actions (workflow `build-windows`), que publica os executáveis como artifact em `.zip` (conteúdo gerado em `release/`).
 
-O workflow `build-windows` gera um artifact em `.zip`. Após baixar e extrair, os executáveis ficam em `release/` (portable + NSIS).
+## Identidade visual
 
-## Ícone do app
-
-O ícone do app é lido de `build/icon.png` (configurado no `package.json`).
+O ícone do aplicativo é configurado via `build/icon.png` no `package.json`.
