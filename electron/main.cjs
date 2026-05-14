@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const fsSync = require("fs");
 const path = require("path");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -373,6 +374,7 @@ function createSerialBridge(io) {
 
 async function createMainWindow({ socketUrl }) {
   const win = new BrowserWindow({
+    icon: getWindowIconPath(),
     width: 1280,
     height: 820,
     minWidth: 980,
@@ -399,6 +401,11 @@ async function createMainWindow({ socketUrl }) {
 }
 
 let disposeSerial = null;
+
+function getWindowIconPath() {
+  const p = path.join(__dirname, "..", "build", "icon.png");
+  return fsSync.existsSync(p) ? p : undefined;
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
