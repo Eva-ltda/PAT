@@ -40,6 +40,10 @@ declare global {
         | { ok: false; error?: string }
       >;
       getBackupInfo?: () => Promise<{ baseDir?: string; rows: number }>;
+      checkAutoUpdate?: () => Promise<
+        | { ok: true; startedAt: number; currentVersion: string; intervalMinutes: number }
+        | { ok: false; error?: string }
+      >;
     };
   }
 

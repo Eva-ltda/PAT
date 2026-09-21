@@ -72,6 +72,26 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(null), 4500);
   };
 
+  const handleCheckUpdateNow = async () => {
+    try {
+      const res = await window.DashboardArduino?.checkAutoUpdate?.();
+      if (!res) {
+        showToast("err", "Verificação de atualizações indisponível.");
+        return;
+      }
+      if (res.ok) {
+        showToast(
+          "ok",
+          `Verificando atualizações (Patch ${res.currentVersion}). Repetirá automaticamente a cada ${res.intervalMinutes} min.`
+        );
+        return;
+      }
+      showToast("err", `Falha: ${res.error || "Erro desconhecido"}`);
+    } catch (e) {
+      showToast("err", `Falha: ${(e as Error)?.message || String(e)}`);
+    }
+  };
+
   const exportCsv = async () => {
     try {
       const now = new Date();
@@ -372,6 +392,7 @@ export default function App() {
         lastUpdateTs={lastUpdateTs}
         sessionRows={sessionRows}
         appVersion={appVersion}
+        onCheckUpdateNow={handleCheckUpdateNow}
       />
     </div>
   );

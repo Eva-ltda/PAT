@@ -24,5 +24,6 @@ contextBridge.exposeInMainWorld("DashboardArduino", {
   runBackupManual: () => ipcRenderer.invoke("dashboard:runBackupManual"),
   getBackupInfo: () => ipcRenderer.invoke("dashboard:getBackupInfo"),
   getStatus: () => ipcRenderer.invoke("dashboard:getStatus"),
-  getSessionInfo: () => ipcRenderer.invoke("dashboard:getSessionInfo")
+  getSessionInfo: () => ipcRenderer.invoke("dashboard:getSessionInfo"),
+  checkAutoUpdate: () => ipcRenderer.invoke("dashboard:checkAutoUpdateNow")
 });

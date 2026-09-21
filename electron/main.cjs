@@ -959,7 +959,7 @@ function configureAutoUpdater() {
 
   checkForUpdates();
   if (!autoUpdateCheckTimer) {
-    autoUpdateCheckTimer = setInterval(checkForUpdates, 30 * 60 * 1000);
+    autoUpdateCheckTimer = setInterval(checkForUpdates, 10 * 60 * 1000);
   }
 }
 
@@ -991,6 +991,19 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("dashboard:getStatus", () => serial.getStatus());
   ipcMain.handle("dashboard:getSessionInfo", () => serial.getSessionInfo());
+  ipcMain.handle("dashboard:checkAutoUpdateNow", async () => {
+    try {
+      if (!autoUpdater) return { ok: false, error: "Auto-update indisponível" };
+      if (!app.isPackaged) return { ok: false, error: "Modo desenvolvimento (rode o .exe instalado/portable)" };
+      console.log(`[Auto-Update] IPC: checkAutoUpdateNow solicitado pela UI (v${app.getVersion()}).`);
+      checkForUpdates();
+      return { ok: true, startedAt: Date.now(), currentVersion: app.getVersion(), intervalMinutes: 10 };
+    } catch (e) {
+      const msg = e && typeof e.message === "string" ? e.message : String(e || "erro");
+      console.error("[Auto-Update] IPC checkAutoUpdateNow falhou:", msg);
+      return { ok: false, error: msg };
+    }
+  });
   ipcMain.handle("dashboard:listSerialPorts", async () => {
     const { SerialPort } = await loadSerialDeps();
     const ports = await SerialPort.list();

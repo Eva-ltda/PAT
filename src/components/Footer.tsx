@@ -24,7 +24,8 @@ export default function Footer({
   manualDisconnect,
   lastUpdateTs,
   sessionRows,
-  appVersion
+  appVersion,
+  onCheckUpdateNow
 }: {
   online: boolean;
   connected?: boolean;
@@ -33,6 +34,7 @@ export default function Footer({
   lastUpdateTs?: number;
   sessionRows?: number;
   appVersion?: string;
+  onCheckUpdateNow?: () => void;
 }) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -80,7 +82,17 @@ export default function Footer({
           ) : null}
         </div>
         <div className="flex items-center gap-2 text-slate-500">
-          <span>{versionLabel}</span>
+          <button
+            type="button"
+            onDoubleClick={() => onCheckUpdateNow?.()}
+            onClick={(e) => {
+              if (e.detail >= 2) return;
+            }}
+            className="select-none rounded-full px-3 py-1.5 transition hover:bg-slate-900/5 active:scale-[0.99]"
+            title="Dê 2 cliques rápidos aqui para verificar atualizações agora."
+          >
+            <span>{versionLabel}</span>
+          </button>
         </div>
       </div>
     </div>
