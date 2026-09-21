@@ -167,8 +167,7 @@ function getCsvHeaders(semicolon = true) {
     "Temperatura Ambiente",
     "Umidade",
     "Pressão",
-    "VOC",
-    "Qualidade do Ar"
+    "PPM"
   ].join(sep);
 }
 
@@ -178,11 +177,45 @@ function formatCsvRow(r, semicolon = true) {
     if (x === null || x === undefined || typeof x !== "number" || !Number.isFinite(x)) return "";
     return String(x);
   };
-  const fmtQ = (x) => {
-    const q = calcularQualidadeVOC(x);
-    return q.texto;
+  const dt = new Date(r.ts);
+  const ppm = (typeof r.vocPpm === "number" && Number.isFinite(r.vocPpm)) ? r.vocPpm : calcularVocPpm(r.voc);
+  return [
+    dt.toLocaleDateString("pt-BR"),
+    dt.toLocaleTimeString("pt-BR"),
+    fmtNum(r.t1),
+    fmtNum(r.t2),
+    fmtNum(r.t3),
+    fmtNum(r.temp),
+    fmtNum(r.hum),
+    fmtNum(r.pressure),
+    fmtNum(ppm)
+  ].join(sep);
+}
+
+function getBackupCsvHeaders(semicolon = true) {
+  const sep = semicolon ? ";" : ",";
+  return [
+    "Data",
+    "Hora",
+    "Termopar 1",
+    "Termopar 2",
+    "Termopar 3",
+    "Temperatura Ambiente",
+    "Umidade",
+    "Pressão",
+    "VOC (kΩ)",
+    "PPM"
+  ].join(sep);
+}
+
+function formatBackupCsvRow(r, semicolon = true) {
+  const sep = semicolon ? ";" : ",";
+  const fmtNum = (x) => {
+    if (x === null || x === undefined || typeof x !== "number" || !Number.isFinite(x)) return "";
+    return String(x);
   };
   const dt = new Date(r.ts);
+  const ppm = (typeof r.vocPpm === "number" && Number.isFinite(r.vocPpm)) ? r.vocPpm : calcularVocPpm(r.voc);
   return [
     dt.toLocaleDateString("pt-BR"),
     dt.toLocaleTimeString("pt-BR"),
@@ -193,7 +226,7 @@ function formatCsvRow(r, semicolon = true) {
     fmtNum(r.hum),
     fmtNum(r.pressure),
     fmtNum(r.voc),
-    fmtQ(r.voc)
+    fmtNum(ppm)
   ].join(sep);
 }
 
@@ -225,16 +258,24 @@ function awaitDrain(stream) {
 }
 
 async function writeCsvStream(filePath, rows, options = {}) {
-  const { includeHeader = true, semicolon = true, bom = true, chunkSize = 2000 } = options;
+  const {
+    includeHeader = true,
+    semicolon = true,
+    bom = true,
+    chunkSize = 2000,
+    format = "export"
+  } = options;
   if (!filePath || !rows || !Array.isArray(rows)) throw new Error("Parâmetros inválidos para writeCsvStream");
   const total = rows.length;
   const writeStream = fsSync.createWriteStream(filePath, { encoding: "utf8" });
+  const headerFn = format === "backup" ? getBackupCsvHeaders : getCsvHeaders;
+  const rowFn = format === "backup" ? formatBackupCsvRow : formatCsvRow;
   try {
     if (bom) {
       const wroteBom = writeStream.write("\uFEFF");
       if (!wroteBom) await awaitDrain(writeStream);
     }
-    const header = (includeHeader ? getCsvHeaders(semicolon) : "") + "\r\n";
+    const header = (includeHeader ? headerFn(semicolon) : "") + "\r\n";
     if (includeHeader) {
       const ok = writeStream.write(header);
       if (!ok) await awaitDrain(writeStream);
@@ -244,7 +285,7 @@ async function writeCsvStream(filePath, rows, options = {}) {
       let block = "";
       for (let j = i; j < end; j++) {
         const r = rows[j];
-        block += formatCsvRow(r, semicolon);
+        block += rowFn(r, semicolon);
         block += "\r\n";
       }
       const ok = writeStream.write(block);
@@ -686,7 +727,7 @@ async function writeBackupFile(baseDir, prefix, rows, { allowOverwriteOld = true
   do {
     const tmp = path.join(dayDir, `.tmp_${prefix}_${process.pid}_${Date.now()}_${tries}.csv`);
     try {
-      const written = await writeCsvStream(tmp, rows, { includeHeader: true, semicolon: true, bom: true, chunkSize: 2000 });
+      const written = await writeCsvStream(tmp, rows, { includeHeader: true, semicolon: true, bom: true, chunkSize: 2000, format: "backup" });
       if (written !== rows.length) throw new Error(`writeBackupFile wrote ${written}, expected ${rows.length}`);
       try {
         await fs.rename(tmp, finalPath);
