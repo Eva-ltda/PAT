@@ -39,41 +39,56 @@ function fmtRounded(v: number | null | undefined) {
 }
 
 export default function App() {
-  const [status, setStatus] = useState<ConnectionStatus>({ connected: false });
+  const [status, setStatus] = useState<ConnectionStatus>({ connected: false, collecting: true, manualDisconnect: false, sessionRows: 0 });
   const [latest, setLatest] = useState<SensorPayload | null>(null);
   const [history, setHistory] = useState<SensorPayload[]>([]);
   const [consoleLines, setConsoleLines] = useState<{ ts: number; raw: string }[]>([]);
   const [backupInfo, setBackupInfo] = useState<{ baseDir?: string; rows?: number } | null>(null);
+  const [appVersion, setAppVersion] = useState<string>("");
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const v = await window.DashboardArduino?.getAppVersion?.();
+        if (!mounted) return;
+        if (v) {
+          setAppVersion(v);
+          return;
+        }
+      } catch {
+      }
+      const fallback = window.DashboardArduino?.appVersion;
+      if (mounted && fallback) setAppVersion(fallback);
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const showToast = (kind: "ok" | "err", text: string) => {
     setToast({ kind, text });
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 4000);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 4500);
   };
 
   const exportCsv = async () => {
     try {
-      const rowsForExport = history.length
-        ? history.map((r) => ({
-            ts: r.ts,
-            t1: r.t1,
-            t2: r.t2,
-            t3: r.t3,
-            temp: r.temp,
-            hum: r.hum,
-            pressure: r.pressure,
-            voc: r.voc
-          }))
-        : undefined;
       const now = new Date();
       const p = (n: number) => String(n).padStart(2, "0");
-      const defaultFileName = `Dashboard_Arduino_${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}_${p(now.getHours())}-${p(now.getMinutes())}.csv`;
-      const res = await window.DashboardArduino?.exportCsv?.({ rows: rowsForExport, defaultFileName });
+      const defaultFileName = `Dashboard_Arduino_${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}_${p(now.getHours())}-${p(now.getMinutes())}-${p(now.getSeconds())}.csv`;
+      const res = await window.DashboardArduino?.exportCsv?.({ defaultFileName });
       if (!res) return;
       if (res.canceled) return;
-      showToast("ok", `Exportado: ${res.filePath ?? defaultFileName} (${res.rows ?? 0} linhas)`);
+      if ((res as any).error) {
+        showToast("err", `Falha ao exportar: ${String((res as any).error)}`);
+        return;
+      }
+      if (res.rows === 0 && !res.filePath) {
+        showToast("err", "Nenhum registro disponível para exportar.");
+        return;
+      }
+      showToast("ok", `Exportação concluída: ${(res.rows ?? 0).toLocaleString("pt-BR")} registros salvos em ${res.filePath ?? defaultFileName}`);
     } catch (e) {
       showToast("err", `Falha ao exportar: ${(e as Error)?.message ?? String(e)}`);
     }
@@ -87,12 +102,37 @@ export default function App() {
         return;
       }
       if (r.ok) {
-        showToast("ok", `Backup salvo: ${r.path ?? "sucesso"} (${r.rows ?? 0} amostras)`);
+        showToast("ok", `Backup concluído: ${(r.rows ?? 0).toLocaleString("pt-BR")} registros em ${r.path ?? "pasta padrão"}`);
       } else {
         showToast("err", `Falha no backup: ${r.error ?? "erro desconhecido"}`);
       }
     } catch (e) {
       showToast("err", `Falha no backup: ${(e as Error)?.message ?? String(e)}`);
+    }
+  };
+
+  const disconnectManual = async () => {
+    try {
+      await window.DashboardArduino?.serialDisconnectManual?.();
+    } catch (e) {
+      showToast("err", `Falha ao desconectar: ${(e as Error)?.message ?? String(e)}`);
+    }
+  };
+
+  const connectManual = async () => {
+    try {
+      await window.DashboardArduino?.serialConnectManual?.();
+    } catch (e) {
+      showToast("err", `Falha ao conectar: ${(e as Error)?.message ?? String(e)}`);
+    }
+  };
+
+  const toggleCollecting = async () => {
+    try {
+      const next = !Boolean(status.collecting ?? true);
+      await window.DashboardArduino?.setCollecting?.(next);
+    } catch (e) {
+      showToast("err", `Falha ao alterar coleta: ${(e as Error)?.message ?? String(e)}`);
     }
   };
 
@@ -102,7 +142,8 @@ export default function App() {
       try {
         const r = await window.DashboardArduino?.getBackupInfo?.();
         if (mounted) setBackupInfo(r || null);
-      } catch {}
+      } catch {
+      }
     };
     refreshBackupInfo();
     const id = window.setInterval(refreshBackupInfo, 2500);
@@ -119,7 +160,7 @@ export default function App() {
       setStatus((s) => ({ ...s, error: undefined }));
     });
 
-    socket.on("status", (s) => setStatus(s));
+    socket.on("status", (s) => setStatus((prev) => ({ ...prev, ...s })));
 
     socket.on("serialLine", (p: { ts: number; raw: string; parsed: boolean }) => {
       setConsoleLines((l) => clampHistory([...l, { ts: p.ts, raw: p.raw }], 120));
@@ -138,6 +179,8 @@ export default function App() {
 
   const lastUpdateTs = latest?.ts ?? status.lastSeenTs;
   const online = Boolean(status.connected && lastUpdateTs && Date.now() - lastUpdateTs < 4000);
+  const collecting = Boolean(status.collecting ?? true);
+  const sessionRows = status.sessionRows ?? 0;
 
   const therm1 = useMemo(() => history.map((p) => ({ ts: p.ts, v: p.t1 })), [history]);
   const therm2 = useMemo(() => history.map((p) => ({ ts: p.ts, v: p.t2 })), [history]);
@@ -177,7 +220,11 @@ export default function App() {
         status={status}
         onExport={exportCsv}
         onBackup={runBackupNow}
-        exportDisabled={!history.length}
+        onDisconnect={disconnectManual}
+        onConnect={connectManual}
+        onToggleCollecting={toggleCollecting}
+        exportDisabled={sessionRows === 0}
+        backupDisabled={sessionRows === 0}
         lastReadTs={latest?.ts}
         backupInfo={backupInfo}
       />
@@ -191,8 +238,14 @@ export default function App() {
                 <div className="text-xs text-slate-500">3 canais • MAX6675 • destaque + mini gráfico</div>
               </div>
               <div className="hidden items-center gap-2 rounded-full bg-white px-3 py-2 text-xs font-medium text-slate-600 shadow-soft ring-1 ring-slate-200/60 sm:flex">
-                <span className={`h-2 w-2 rounded-full ${online ? "bg-emerald-500" : "bg-slate-300"}`} />
-                <span>{online ? "Atualizando" : "Sem dados recentes"}</span>
+                <span className={`h-2 w-2 rounded-full ${online ? (collecting ? "bg-emerald-500" : "bg-amber-500") : "bg-slate-300"}`} />
+                <span>
+                  {online
+                    ? collecting
+                      ? "Atualizando"
+                      : "Conexão ativa (coleta pausada)"
+                    : "Sem dados recentes"}
+                </span>
               </div>
             </div>
 
@@ -302,7 +355,15 @@ export default function App() {
         </div>
       </div>
 
-      <Footer online={online} lastUpdateTs={lastUpdateTs} />
+      <Footer
+        online={online}
+        connected={status.connected}
+        collecting={collecting}
+        manualDisconnect={Boolean(status.manualDisconnect)}
+        lastUpdateTs={lastUpdateTs}
+        sessionRows={sessionRows}
+        appVersion={appVersion}
+      />
     </div>
   );
 }

@@ -4,7 +4,7 @@ const path = require("path");
 const http = require("http");
 const { Server } = require("socket.io");
 const fs = require("fs/promises");
-const { parseCsvLine, parseTextLine, calcularQualidadeVOC } = require("./lib/parsers.cjs");
+const { parseCsvLine, parseTextLine, calcularQualidadeVOC, calcularVocPpm, resetThermocoupleMemory } = require("./lib/parsers.cjs");
 let autoUpdater = null;
 try {
   autoUpdater = require("electron-updater").autoUpdater;
@@ -14,6 +14,23 @@ try {
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 let autoUpdateCheckTimer = null;
+
+function formatBytes(bytes) {
+  try {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let size = n;
+    let unitIdx = 0;
+    while (size >= 1024 && unitIdx < units.length - 1) {
+      size /= 1024;
+      unitIdx += 1;
+    }
+    return `${size.toFixed(size < 10 && unitIdx > 0 ? 2 : 1)} ${units[unitIdx]}`;
+  } catch {
+    return "0 B";
+  }
+}
 
 if (isDev || process.env.ELECTRON_LOCAL_DATA) {
   const localDataRoot = path.join(__dirname, "..", ".electron-temp");
@@ -118,9 +135,160 @@ async function pickArduinoPort(preferredPath) {
   return scored[0]?.p ?? null;
 }
 
+function getSessionBaseDir() {
+  try {
+    const dir = path.join(app.getPath("userData"), "Sessions");
+    fsSync.mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch {
+    try {
+      const dir = path.join(__dirname, "..", ".electron-temp", "Sessions");
+      fsSync.mkdirSync(dir, { recursive: true });
+      return dir;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function yyyymmddCompact(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function getCsvHeaders(semicolon = true) {
+  const sep = semicolon ? ";" : ",";
+  return [
+    "Data",
+    "Hora",
+    "Termopar 1",
+    "Termopar 2",
+    "Termopar 3",
+    "Temperatura Ambiente",
+    "Umidade",
+    "Pressão",
+    "VOC",
+    "Qualidade do Ar"
+  ].join(sep);
+}
+
+function formatCsvRow(r, semicolon = true) {
+  const sep = semicolon ? ";" : ",";
+  const fmtNum = (x) => {
+    if (x === null || x === undefined || typeof x !== "number" || !Number.isFinite(x)) return "";
+    return String(x);
+  };
+  const fmtQ = (x) => {
+    const q = calcularQualidadeVOC(x);
+    return q.texto;
+  };
+  const dt = new Date(r.ts);
+  return [
+    dt.toLocaleDateString("pt-BR"),
+    dt.toLocaleTimeString("pt-BR"),
+    fmtNum(r.t1),
+    fmtNum(r.t2),
+    fmtNum(r.t3),
+    fmtNum(r.temp),
+    fmtNum(r.hum),
+    fmtNum(r.pressure),
+    fmtNum(r.voc),
+    fmtQ(r.voc)
+  ].join(sep);
+}
+
+function buildSessionCsv(rows, options = {}) {
+  const { includeHeader = true, semicolon = true } = options;
+  const lines = [];
+  if (includeHeader) lines.push(getCsvHeaders(semicolon));
+  for (const r of rows) {
+    lines.push(formatCsvRow(r, semicolon));
+  }
+  return lines.join("\r\n");
+}
+
+function awaitStreamFinish(stream) {
+  return new Promise((resolve, reject) => {
+    stream.once("error", reject);
+    stream.once("finish", () => resolve());
+  });
+}
+
+function awaitDrain(stream) {
+  return new Promise((resolve) => {
+    if (stream.writableNeedDrain === false || !stream.writableNeedDrain) {
+      resolve();
+      return;
+    }
+    stream.once("drain", () => resolve());
+  });
+}
+
+async function writeCsvStream(filePath, rows, options = {}) {
+  const { includeHeader = true, semicolon = true, bom = true, chunkSize = 2000 } = options;
+  if (!filePath || !rows || !Array.isArray(rows)) throw new Error("Parâmetros inválidos para writeCsvStream");
+  const total = rows.length;
+  const writeStream = fsSync.createWriteStream(filePath, { encoding: "utf8" });
+  try {
+    if (bom) {
+      const wroteBom = writeStream.write("\uFEFF");
+      if (!wroteBom) await awaitDrain(writeStream);
+    }
+    const header = (includeHeader ? getCsvHeaders(semicolon) : "") + "\r\n";
+    if (includeHeader) {
+      const ok = writeStream.write(header);
+      if (!ok) await awaitDrain(writeStream);
+    }
+    for (let i = 0; i < total; i += chunkSize) {
+      const end = Math.min(i + chunkSize, total);
+      let block = "";
+      for (let j = i; j < end; j++) {
+        const r = rows[j];
+        block += formatCsvRow(r, semicolon);
+        block += "\r\n";
+      }
+      const ok = writeStream.write(block);
+      block = "";
+      if (!ok) await awaitDrain(writeStream);
+      if ((i & 16383) === 0) {
+        await new Promise((res) => setImmediate(res));
+      }
+    }
+    writeStream.end();
+    await awaitStreamFinish(writeStream);
+  } catch (e) {
+    try { writeStream.destroy(); } catch {}
+    throw e;
+  }
+  return total;
+}
+
+function sanitizeError(e) {
+  const err = e instanceof Error ? e : new Error(String(e == null ? "erro desconhecido" : e));
+  let code = "";
+  try {
+    if (err && typeof (err).code === "string") code = (err).code;
+  } catch {}
+  const msg = String(err.message || String(e || "erro desconhecido"));
+  if (code === "EPERM" || code === "EACCES" || /OneDrive|perm/i.test(msg)) {
+    return new Error(`Permissão negada ao salvar (${code || "EPERM"}). Verifique se a pasta (OneDrive/Documentos) não está sincronizando bloqueada ou protegida, e escolha outro local como Área de Trabalho.`);
+  }
+  if (code === "EBUSY" || code === "ETXTBSY" || /está sendo usado|being used/i.test(msg)) {
+    return new Error(`O arquivo está aberto em outro programa (${code || "EBUSY"}). Feche o arquivo no Excel/Editor e tente novamente.`);
+  }
+  if (code === "ENOSPC") {
+    return new Error(`Espaço insuficiente em disco (${code}).`);
+  }
+  if (code === "EISDIR") {
+    return new Error(`Caminho inválido (${code}) — não é possível gravar em uma pasta sem nome de arquivo.`);
+  }
+  return new Error(`${msg}${code ? ` (código ${code})` : ""}`);
+}
+
+
 function createSerialBridge(io) {
   let currentPort = null;
-  let lastStatus = { connected: false };
+  let lastStatus = { connected: false, collecting: true, manualDisconnect: false, sessionRows: 0 };
   let scanning = false;
   let scanTimer = null;
   let preferredPath = getPreferredSerialPath();
@@ -129,6 +297,21 @@ function createSerialBridge(io) {
   let textFrame = null;
   let textFrameTouched = false;
 
+  let manualDisconnect = false;
+  let collecting = true;
+
+  const sessionDir = getSessionBaseDir();
+  const sessionJsonlPath = sessionDir ? path.join(sessionDir, `sess_${yyyymmddCompact()}.jsonl`) : null;
+  let jsonlFd = null;
+  try {
+    if (sessionJsonlPath) {
+      jsonlFd = fsSync.openSync(sessionJsonlPath, "a");
+    }
+  } catch {
+    jsonlFd = null;
+  }
+  let lastFinalBackupPath = null;
+
   const lastGood = {
     t1: null,
     t2: null,
@@ -136,20 +319,30 @@ function createSerialBridge(io) {
     temp: null,
     hum: null,
     pressure: null,
-    voc: null
+    voc: null,
+    vocPpm: null
   };
   let sessionHistory = [];
 
+  function appendJsonl(row) {
+    if (!jsonlFd || !row) return;
+    try {
+      fsSync.writeSync(jsonlFd, JSON.stringify(row) + "\n");
+    } catch {
+    }
+  }
+
   function emitStatus(next) {
-    lastStatus = { ...lastStatus, ...next };
+    lastStatus = { ...lastStatus, ...next, sessionRows: sessionHistory.length, collecting, manualDisconnect };
     io.emit("status", lastStatus);
   }
 
   function sessionHistoryPush(row) {
+    if (!collecting) return;
     sessionHistory.push(row);
-    const MAX = 10_800;
-    if (sessionHistory.length > MAX) {
-      sessionHistory = sessionHistory.slice(sessionHistory.length - MAX);
+    appendJsonl(row);
+    if (sessionHistory.length % 25 === 0) {
+      io.emit("status", { ...lastStatus, sessionRows: sessionHistory.length, collecting, manualDisconnect });
     }
   }
 
@@ -168,6 +361,7 @@ function createSerialBridge(io) {
         }
       }
     }
+    lastGood.vocPpm = calcularVocPpm(lastGood.voc);
     const payload = {
       t1: lastGood.t1,
       t2: lastGood.t2,
@@ -176,6 +370,7 @@ function createSerialBridge(io) {
       hum: lastGood.hum,
       pressure: lastGood.pressure,
       voc: lastGood.voc,
+      vocPpm: lastGood.vocPpm,
       raw:
         raw ||
         [lastGood.t1, lastGood.t2, lastGood.t3, lastGood.temp, lastGood.hum, lastGood.pressure, lastGood.voc]
@@ -210,6 +405,7 @@ function createSerialBridge(io) {
     } catch {
     } finally {
       currentPort = null;
+      resetThermocoupleMemory();
     }
   }
 
@@ -226,7 +422,7 @@ function createSerialBridge(io) {
       return false;
     }
 
-    const picked = { path: preferredPath, manufacturer: "manual" };
+    const picked = await pickArduinoPort(preferredPath) || { path: preferredPath, manufacturer: "manual" };
     if (!picked || !picked.path) {
       const msg = preferredPath
         ? `Porta serial não encontrada: ${preferredPath}`
@@ -246,6 +442,7 @@ function createSerialBridge(io) {
     });
 
     currentPort = port;
+    manualDisconnect = false;
     emitStatus({
       connected: true,
       portPath: picked.path,
@@ -312,14 +509,19 @@ function createSerialBridge(io) {
     });
 
     port.on("close", () => {
-      emitStatus({ connected: false, error: "Conexão serial encerrada" });
-      scheduleScan(800);
+      const wasManual = manualDisconnect;
+      emitStatus({ connected: false, error: wasManual ? "Desconectado pelo usuário" : "Conexão serial encerrada" });
+      resetThermocoupleMemory();
+      if (!wasManual) {
+        scheduleScan(800);
+      }
     });
 
     return true;
   }
 
   async function scanLoop() {
+    if (manualDisconnect) return;
     if (scanning) return;
     scanning = true;
     try {
@@ -327,13 +529,14 @@ function createSerialBridge(io) {
       await connectOnce();
     } catch (e) {
       emitStatus({ connected: false, error: e?.message || String(e) });
-      scheduleScan(1200);
+      if (!manualDisconnect) scheduleScan(1200);
     } finally {
       scanning = false;
     }
   }
 
   function scheduleScan(delayMs) {
+    if (manualDisconnect) return;
     if (scanTimer) return;
     scanTimer = setTimeout(() => {
       scanTimer = null;
@@ -343,13 +546,62 @@ function createSerialBridge(io) {
 
   function setPreferredPath(nextPath) {
     preferredPath = String(nextPath || "").trim() || null;
+    manualDisconnect = false;
     emitStatus({ connected: false, portPath: preferredPath || undefined });
     scheduleScan(0);
+  }
+
+  function setCollecting(next) {
+    const wasCollecting = collecting;
+    collecting = Boolean(next);
+    emitStatus({});
+    if (wasCollecting && !collecting) {
+      runFinalBackupIfNeeded("pausa").catch(() => {});
+    }
+  }
+
+  async function manualDisconnectNow() {
+    manualDisconnect = true;
+    if (scanTimer) {
+      clearTimeout(scanTimer);
+      scanTimer = null;
+    }
+    await closeCurrent();
+    emitStatus({});
+  }
+
+  function manualConnectNow() {
+    manualDisconnect = false;
+    emitStatus({});
+    scheduleScan(0);
+  }
+
+  async function runFinalBackupIfNeeded(reason) {
+    try {
+      const baseDir = getBackupBaseDir();
+      if (!baseDir || sessionHistory.length === 0) return null;
+      const prefix = reason === "pausa" ? "pausa" : "fim";
+      let target = null;
+      if (reason !== "pausa" && lastFinalBackupPath) {
+        target = lastFinalBackupPath;
+      }
+      const written = await writeBackupFile(baseDir, prefix, sessionHistory, {
+        allowOverwriteOld: reason !== "pausa",
+        overwriteTargetPath: target
+      });
+      if (written && reason !== "pausa") {
+        lastFinalBackupPath = written;
+      }
+      return written;
+    } catch {
+      return null;
+    }
   }
 
   function start() {
     scanLoop();
     const periodic = setInterval(() => {
+      if (manualDisconnect) return;
       if (currentPort && currentPort.isOpen) return;
       scheduleScan(0);
     }, 2500);
@@ -358,18 +610,40 @@ function createSerialBridge(io) {
       clearInterval(periodic);
       if (scanTimer) clearTimeout(scanTimer);
       scanTimer = null;
+      try {
+        await runFinalBackupIfNeeded("fim");
+      } catch {}
+      try {
+        if (jsonlFd !== null) {
+          fsSync.closeSync(jsonlFd);
+          jsonlFd = null;
+        }
+      } catch {}
       await closeCurrent();
     };
   }
 
   return {
     start,
-    getStatus: () => lastStatus,
+    getStatus: () => ({ ...lastStatus, sessionRows: sessionHistory.length, collecting, manualDisconnect }),
     setPreferredPath,
     getSessionHistory,
     clearSessionHistory: () => {
       sessionHistory = [];
-    }
+      emitStatus({});
+    },
+    manualDisconnectNow,
+    manualConnectNow,
+    setCollecting,
+    runFinalBackupIfNeeded,
+    getSessionJsonlPath: () => sessionJsonlPath,
+    getSessionInfo: () => ({
+      rows: sessionHistory.length,
+      collecting,
+      manualDisconnect,
+      sessionJsonlPath,
+      startedAt: sessionHistory[0]?.ts ?? null
+    })
   };
 }
 
@@ -401,91 +675,64 @@ function getBackupBaseDir() {
   return null;
 }
 
-function buildSessionCsv(rows, options = {}) {
-  const { includeHeader = true, semicolon = true } = options;
-  const sep = semicolon ? ";" : ",";
-  const fmtNum = (x) => {
-    if (x === null || x === undefined || typeof x !== "number" || !Number.isFinite(x)) return "";
-    return String(x);
-  };
-  const fmtQ = (x) => {
-    const q = calcularQualidadeVOC(x);
-    return q.texto;
-  };
-  const headers = [
-    "Data",
-    "Hora",
-    "Termopar 1",
-    "Termopar 2",
-    "Termopar 3",
-    "Temperatura Ambiente",
-    "Umidade",
-    "Pressão",
-    "VOC",
-    "Qualidade do Ar"
-  ];
-  const lines = [];
-  if (includeHeader) lines.push(headers.join(sep));
-  for (const r of rows) {
-    const dt = new Date(r.ts);
-    lines.push(
-      [
-        dt.toLocaleDateString("pt-BR"),
-        dt.toLocaleTimeString("pt-BR"),
-        fmtNum(r.t1),
-        fmtNum(r.t2),
-        fmtNum(r.t3),
-        fmtNum(r.temp),
-        fmtNum(r.hum),
-        fmtNum(r.pressure),
-        fmtNum(r.voc),
-        fmtQ(r.voc)
-      ].join(sep)
-    );
-  }
-  return lines.join("\r\n");
-}
-
 async function writeBackupFile(baseDir, prefix, rows, { allowOverwriteOld = true, overwriteTargetPath = null } = {}) {
   if (!baseDir || !rows || !rows.length) return null;
   const dayDir = path.join(baseDir, yyyymmdd());
   await fs.mkdir(dayDir, { recursive: true });
   let targetPath = overwriteTargetPath;
   if (!targetPath) targetPath = path.join(dayDir, `${prefix}_${yyyymmdd()}_${hhmmss()}.csv`);
-  const utf8Bom = "\uFEFF";
-  const csvBody = buildSessionCsv(rows);
-  const tmp = `${targetPath}.tmp`;
-  await fs.writeFile(tmp, utf8Bom + csvBody, "utf8");
+  let finalPath = targetPath;
   let tries = 0;
   do {
+    const tmp = path.join(dayDir, `.tmp_${prefix}_${process.pid}_${Date.now()}_${tries}.csv`);
     try {
-      await fs.rename(tmp, targetPath);
-      return targetPath;
-    } catch {
+      const written = await writeCsvStream(tmp, rows, { includeHeader: true, semicolon: true, bom: true, chunkSize: 2000 });
+      if (written !== rows.length) throw new Error(`writeBackupFile wrote ${written}, expected ${rows.length}`);
       try {
-        await fs.copyFile(tmp, targetPath);
-        try { await fs.rm(tmp, { force: true }); } catch {}
-        return targetPath;
-      } catch {}
+        await fs.rename(tmp, finalPath);
+        return finalPath;
+      } catch {
+        try {
+          await fs.copyFile(tmp, finalPath);
+          try { await fs.rm(tmp, { force: true, maxRetries: 1 }); } catch {}
+          return finalPath;
+        } catch {
+        }
+      }
+    } catch (e) {
+      try { await fs.rm(tmp, { force: true, maxRetries: 2 }); } catch {}
+      if (tries >= 4) {
+        throw e;
+      }
     }
     tries++;
     if (!allowOverwriteOld) {
-      targetPath = path.join(dayDir, `${prefix}_${yyyymmdd()}_${hhmmss()}_${process.pid}_${tries}.csv`);
+      finalPath = path.join(
+        dayDir,
+        `${prefix}_${yyyymmdd()}_${hhmmss()}_${process.pid}_${tries}_${Date.now()}.csv`
+      );
     }
   } while (tries < 5);
-  try { await fs.rm(tmp, { force: true }); } catch {}
   return null;
 }
 
 async function createMainWindow({ socketUrl }) {
+  try {
+    if (Menu && typeof Menu.setApplicationMenu === "function") {
+      Menu.setApplicationMenu(null);
+    }
+  } catch {}
   const win = new BrowserWindow({
     icon: getWindowIconPath(),
+    title: "Eva - Dashboard",
     width: 1280,
     height: 820,
     minWidth: 980,
     minHeight: 680,
     backgroundColor: "#ffffff",
     titleBarStyle: "hiddenInset",
+    autoHideMenuBar: true,
+    menuBarVisible: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -495,17 +742,13 @@ async function createMainWindow({ socketUrl }) {
       devTools: !app.isPackaged
     }
   });
+  try {
+    win.removeMenu();
+  } catch {}
 
   if (isDev) {
     await win.loadURL(process.env.VITE_DEV_SERVER_URL);
-    try { win.webContents.openDevTools({ mode: "detach" }); } catch {}
   } else {
-    try {
-      win.removeMenu();
-      if (Menu && typeof Menu.setApplicationMenu === "function") {
-        Menu.setApplicationMenu(null);
-      }
-    } catch {}
     await win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
 
@@ -548,69 +791,139 @@ function configureAutoUpdater() {
   if (!autoUpdater || !app.isPackaged || process.platform !== "win32") return;
 
   try {
-    autoUpdater.autoDownload = true;
+    autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
   } catch {
     return;
   }
 
+  const getMainWindow = () => {
+    try {
+      const list = BrowserWindow ? BrowserWindow.getAllWindows() : [];
+      if (!list || list.length === 0) return null;
+      return list[0];
+    } catch {
+      return null;
+    }
+  };
+
   autoUpdater.on("error", (error) => {
-    console.error("Falha no auto update:", error);
+    const errMsg =
+      error && typeof error === "object" && typeof error.message === "string"
+        ? error.message
+        : String(error || "Erro desconhecido");
+    console.error("Falha no auto update:", errMsg);
   });
 
-  autoUpdater.on("update-available", () => {
-    const win = BrowserWindow.getAllWindows()[0];
-    dialog
-      .showMessageBox(win, {
-        type: "info",
-        title: "Atualização disponível",
-        message: "Uma nova versão do Dashboard Arduino foi encontrada.",
-        detail: "O download será feito automaticamente em segundo plano.",
-        buttons: ["OK"]
-      })
-      .catch(() => {});
-  });
-
-  autoUpdater.on("update-downloaded", () => {
-    const win = BrowserWindow.getAllWindows()[0];
-    dialog
-      .showMessageBox(win, {
-        type: "question",
-        title: "Atualização pronta",
-        message: "A nova versão do Dashboard Arduino já foi baixada.",
-        detail: "Clique em Reiniciar agora para instalar a atualização.",
-        buttons: ["Reiniciar agora", "Depois"],
-        defaultId: 0,
-        cancelId: 1
-      })
-      .then(({ response }) => {
-        if (response === 0) {
-          try {
-            autoUpdater.quitAndInstall();
-          } catch {}
+  autoUpdater.on("update-available", (info) => {
+    const current = app.getVersion();
+    let next = "";
+    if (info) {
+      if (typeof info.version === "string") next = info.version;
+      else if (info.updateInfo && typeof info.updateInfo.version === "string")
+        next = info.updateInfo.version;
+    }
+    const nextOrDash = next || "—";
+    const win = getMainWindow();
+    const opts = {
+      type: "question",
+      title: "Atualização disponível",
+      message: "Há uma nova versão do Dashboard Arduino.",
+      detail: `Versão atual: ${current}\nNova versão: ${nextOrDash}\n\nDeseja baixar e instalar agora?`,
+      buttons: ["Sim", "Não"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    };
+    const onAnswer = ({ response }) => {
+      if (response === 0) {
+        try {
+          autoUpdater.downloadUpdate().catch((err) => {
+            const msg = err && err.message ? err.message : String(err || "erro");
+            console.error("Falha ao baixar atualização:", msg);
+          });
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e || "erro");
+          console.error("Falha ao disparar download de atualização:", msg);
         }
-      })
-      .catch(() => {});
+      }
+    };
+    if (win) {
+      dialog.showMessageBox(win, opts).then(onAnswer).catch(() => {});
+    } else {
+      dialog.showMessageBox(opts).then(onAnswer).catch(() => {});
+    }
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    try {
+      const pct = progress && typeof progress.percent === "number" ? progress.percent : NaN;
+      const total = progress && typeof progress.total === "number" ? progress.total : 0;
+      const transferred =
+        progress && typeof progress.transferred === "number" ? progress.transferred : 0;
+      if (!Number.isNaN(pct)) {
+        console.log(
+          `Progresso de atualização: ${pct.toFixed(1)}%  (${formatBytes(transferred)} / ${formatBytes(total)})`
+        );
+      } else if (total > 0) {
+        console.log(
+          `Baixando atualização: ${formatBytes(transferred)} / ${formatBytes(total)}`
+        );
+      }
+    } catch {}
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    const win = getMainWindow();
+    let next = "";
+    if (info) {
+      if (typeof info.version === "string") next = info.version;
+      else if (info.updateInfo && typeof info.updateInfo.version === "string")
+        next = info.updateInfo.version;
+    }
+    const nextOrDash = next || "—";
+    const opts = {
+      type: "question",
+      title: "Atualização pronta",
+      message: "A nova versão do Dashboard Arduino já foi baixada.",
+      detail: `Nova versão: ${nextOrDash}\n\nClique em Reiniciar agora para aplicar. A instalação é automática após o fechamento.`,
+      buttons: ["Reiniciar agora", "Depois"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    };
+    const onAnswer = ({ response }) => {
+      if (response === 0) {
+        try {
+          autoUpdater.quitAndInstall();
+        } catch {}
+      }
+    };
+    if (win) {
+      dialog.showMessageBox(win, opts).then(onAnswer).catch(() => {});
+    } else {
+      dialog.showMessageBox(opts).then(onAnswer).catch(() => {});
+    }
   });
 
   const checkForUpdates = () => {
     try {
       autoUpdater.checkForUpdates().catch((error) => {
-        console.error("Falha ao verificar atualizações:", error);
+        const msg = error && error.message ? error.message : String(error || "erro");
+        console.error("Falha ao verificar atualizações:", msg);
       });
     } catch {}
   };
 
   checkForUpdates();
-  autoUpdateCheckTimer = setInterval(checkForUpdates, 30 * 60 * 1000);
+  if (!autoUpdateCheckTimer) {
+    autoUpdateCheckTimer = setInterval(checkForUpdates, 30 * 60 * 1000);
+  }
 }
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
-
-let latestSessionBackupTarget = null;
-let latestSessionRowsAtStart = [];
 
 app.whenReady().then(async () => {
   const { io, socketUrl } = await createIoServer();
@@ -622,12 +935,10 @@ app.whenReady().then(async () => {
     const baseDir = getBackupBaseDir();
     if (baseDir) {
       try {
-        const dayDir = path.join(baseDir, yyyymmdd());
-        latestSessionBackupTarget = path.join(dayDir, `fim_${yyyymmdd()}_${hhmmss()}.csv`);
-        latestSessionRowsAtStart = serial.getSessionHistory ? serial.getSessionHistory() : [];
-        if (latestSessionRowsAtStart && latestSessionRowsAtStart.length > 0) {
+        const rowsAtStart = serial.getSessionHistory ? serial.getSessionHistory() : [];
+        if (rowsAtStart && rowsAtStart.length > 0) {
           try {
-            await writeBackupFile(baseDir, "inicio", latestSessionRowsAtStart, { allowOverwriteOld: false });
+            await writeBackupFile(baseDir, "inicio", rowsAtStart, { allowOverwriteOld: false });
           } catch (e) {
             console.warn("backup inicio não gravado:", e?.message || String(e));
           }
@@ -637,6 +948,7 @@ app.whenReady().then(async () => {
   } catch {}
 
   ipcMain.handle("dashboard:getStatus", () => serial.getStatus());
+  ipcMain.handle("dashboard:getSessionInfo", () => serial.getSessionInfo());
   ipcMain.handle("dashboard:listSerialPorts", async () => {
     const { SerialPort } = await loadSerialDeps();
     const ports = await SerialPort.list();
@@ -654,20 +966,122 @@ app.whenReady().then(async () => {
     serial.setPreferredPath(portPath);
     return { ok: true };
   });
+  ipcMain.handle("dashboard:serialDisconnectManual", async () => {
+    await serial.manualDisconnectNow();
+    return { ok: true };
+  });
+  ipcMain.handle("dashboard:serialConnectManual", async () => {
+    serial.manualConnectNow();
+    return { ok: true };
+  });
+  ipcMain.handle("dashboard:setCollecting", async (_event, args) => {
+    const collecting = Boolean(args?.collecting);
+    serial.setCollecting(collecting);
+    return { ok: true, collecting };
+  });
   ipcMain.handle("dashboard:exportCsv", async (event, args) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const rows = Array.isArray(args?.rows) && args.rows.length > 0 ? args.rows : serial.getSessionHistory();
-    const csvBody = buildSessionCsv(rows);
-    const defaultFileName = String(args?.defaultFileName || "").trim() || `Dashboard_Arduino_${yyyymmdd()}_${hhmmss().replace(/-/g, "")}.csv`;
-    const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: "Exportar dados para Excel/CSV",
-      defaultPath: path.join(app.getPath("documents"), defaultFileName),
-      filters: [{ name: "CSV (Excel)", extensions: ["csv"] }]
-    });
-    if (canceled || !filePath) return { canceled: true };
-    const content = "\uFEFF" + csvBody;
-    await fs.writeFile(filePath, content, "utf8");
-    return { canceled: false, filePath, rows: rows.length };
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const sessionRows = serial.getSessionHistory ? serial.getSessionHistory() : [];
+      const providedRows = Array.isArray(args?.rows) ? args.rows : [];
+      const rows = providedRows.length > sessionRows.length ? providedRows : sessionRows;
+      if (!rows || rows.length === 0) {
+        return { canceled: false, filePath: undefined, rows: 0 };
+      }
+      const defaultFileName = String(args?.defaultFileName || "").trim() || `Dashboard_Arduino_${yyyymmdd()}_${hhmmss()}.csv`;
+      let defaultDir;
+      try {
+        defaultDir = app.getPath("documents");
+      } catch {
+        try { defaultDir = app.getPath("desktop"); } catch { defaultDir = app.getPath("userData"); }
+      }
+      let dialogChoice = null;
+      const runDialog = async (initialDirOverride) => {
+        const initialDir = initialDirOverride || defaultDir;
+        const { canceled, filePath } = await dialog.showSaveDialog(win, {
+          title: "Exportar dados para Excel/CSV",
+          defaultPath: path.join(initialDir, defaultFileName),
+          filters: [{ name: "CSV (Excel)", extensions: ["csv"] }],
+          showsTagField: false
+        });
+        dialogChoice = { canceled, filePath };
+      };
+      try {
+        await runDialog(undefined);
+      } catch (e) {
+        throw new Error(`Falha ao abrir diálogo de salvar arquivo: ${e?.message || String(e)}`);
+      }
+      if (dialogChoice?.canceled || !dialogChoice?.filePath) {
+        return { canceled: true };
+      }
+      const filePath = dialogChoice.filePath;
+      const targetDir = path.dirname(filePath);
+      try { await fs.mkdir(targetDir, { recursive: true }); } catch {}
+      const tmp = `${filePath}.tmp.${Date.now()}.csv`;
+      try {
+        await writeCsvStream(tmp, rows, { includeHeader: true, semicolon: true, bom: true, chunkSize: 2000 });
+        try {
+          await fs.rename(tmp, filePath);
+        } catch (renameErr) {
+          try {
+            await fs.copyFile(tmp, filePath);
+            try { await fs.rm(tmp, { force: true, maxRetries: 2 }); } catch {}
+          } catch {
+            throw renameErr || new Error("Não foi possível finalizar a gravação do arquivo");
+          }
+        }
+        return { canceled: false, filePath, rows: rows.length };
+      } catch (writeErr) {
+        try { await fs.rm(tmp, { force: true, maxRetries: 2 }); } catch {}
+        const friendly = sanitizeError(writeErr);
+        const looksPermission = /EPERM|EACCES|OneDrive|perm/i.test(String(friendly.message) + String(writeErr?.code || ""));
+        if (looksPermission) {
+          let fallbackDir;
+          try { fallbackDir = app.getPath("desktop"); } catch {
+            try { fallbackDir = app.getPath("downloads"); } catch {
+              try { fallbackDir = app.getPath("temp"); } catch { fallbackDir = undefined; }
+            }
+          }
+          if (fallbackDir && fallbackDir !== defaultDir) {
+            try {
+              const choice = await dialog.showMessageBox(win, {
+                type: "warning",
+                title: "Falha ao salvar no local escolhido",
+                message: friendly.message,
+                detail: `Tentar salvar automaticamente na sua Área de Trabalho?\n\nLocal sugerido: ${fallbackDir}`,
+                buttons: ["Salvar na Área de Trabalho", "Cancelar exportação"],
+                defaultId: 0,
+                cancelId: 1
+              });
+              if (choice.response === 0) {
+                await runDialog(fallbackDir);
+                if (dialogChoice?.canceled || !dialogChoice?.filePath) {
+                  return { canceled: true };
+                }
+                const fallbackPath = dialogChoice.filePath;
+                const fallbackTmp = `${fallbackPath}.tmp.${Date.now()}.csv`;
+                const fallbackDirP = path.dirname(fallbackPath);
+                try { await fs.mkdir(fallbackDirP, { recursive: true }); } catch {}
+                await writeCsvStream(fallbackTmp, rows, { includeHeader: true, semicolon: true, bom: true, chunkSize: 2000 });
+                try {
+                  await fs.rename(fallbackTmp, fallbackPath);
+                } catch {
+                  await fs.copyFile(fallbackTmp, fallbackPath);
+                  try { await fs.rm(fallbackTmp, { force: true, maxRetries: 2 }); } catch {}
+                }
+                return { canceled: false, filePath: fallbackPath, rows: rows.length, note: "saved-to-desktop-fallback" };
+              }
+            } catch (innerFallbackErr) {
+              throw sanitizeError(innerFallbackErr);
+            }
+          }
+        }
+        throw friendly;
+      }
+    } catch (topLevelErr) {
+      const friendly = sanitizeError(topLevelErr);
+      return { canceled: false, error: friendly.message, rows: 0 };
+    }
   });
   ipcMain.handle("dashboard:runBackupManual", async () => {
     try {
@@ -702,23 +1116,7 @@ app.on("before-quit", async () => {
   if (disposeSerialRan) return;
   disposeSerialRan = true;
 
-  try {
-    const serial = serialBridgeRef;
-    const baseDir = getBackupBaseDir();
-    const rows = serial?.getSessionHistory ? serial.getSessionHistory() : [];
-    if (baseDir && rows.length > 0) {
-      try {
-        await writeBackupFile(baseDir, "fim", rows, { allowOverwriteOld: true, overwriteTargetPath: latestSessionBackupTarget });
-      } catch (e) {
-        console.warn("backup fim não gravado:", e?.message || String(e));
-      }
-    }
-  } catch (e) {
-    console.warn("backup fim falhou:", e?.message || String(e));
-  }
-
   if (typeof disposeSerial === "function") {
     try { await disposeSerial(); } catch {}
   }
 });
-

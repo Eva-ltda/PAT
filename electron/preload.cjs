@@ -14,9 +14,15 @@ contextBridge.exposeInMainWorld("DashboardArduino", {
   socketUrl,
   appVersion,
   platform: process.platform,
+  getAppVersion: () => Promise.resolve(appVersion || process.env.npm_package_version || ""),
   exportCsv: (args) => ipcRenderer.invoke("dashboard:exportCsv", args),
   listSerialPorts: () => ipcRenderer.invoke("dashboard:listSerialPorts"),
   setSerialPort: (portPath) => ipcRenderer.invoke("dashboard:setSerialPort", { portPath }),
+  serialDisconnectManual: () => ipcRenderer.invoke("dashboard:serialDisconnectManual"),
+  serialConnectManual: () => ipcRenderer.invoke("dashboard:serialConnectManual"),
+  setCollecting: (collecting) => ipcRenderer.invoke("dashboard:setCollecting", { collecting }),
   runBackupManual: () => ipcRenderer.invoke("dashboard:runBackupManual"),
-  getBackupInfo: () => ipcRenderer.invoke("dashboard:getBackupInfo")
+  getBackupInfo: () => ipcRenderer.invoke("dashboard:getBackupInfo"),
+  getStatus: () => ipcRenderer.invoke("dashboard:getStatus"),
+  getSessionInfo: () => ipcRenderer.invoke("dashboard:getSessionInfo")
 });

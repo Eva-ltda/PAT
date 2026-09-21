@@ -1,3 +1,5 @@
+import type { ConnectionStatus, SessionInfo } from "./types";
+
 export {};
 
 declare global {
@@ -6,6 +8,9 @@ declare global {
       socketUrl: string;
       appVersion: string;
       platform: string;
+      getAppVersion?: () => Promise<string>;
+      getStatus?: () => Promise<ConnectionStatus>;
+      getSessionInfo?: () => Promise<SessionInfo>;
       exportCsv?: (args: {
         csvText?: string;
         rows?: {
@@ -27,6 +32,9 @@ declare global {
         { path: string; manufacturer?: string; vendorId?: string; productId?: string }[]
       >;
       setSerialPort?: (portPath: string) => Promise<{ ok: true }>;
+      serialDisconnectManual?: () => Promise<{ ok: true }>;
+      serialConnectManual?: () => Promise<{ ok: true }>;
+      setCollecting?: (collecting: boolean) => Promise<{ ok: true; collecting: boolean }>;
       runBackupManual?: () => Promise<
         | { ok: true; path?: string; rows: number; baseDir?: string }
         | { ok: false; error?: string }

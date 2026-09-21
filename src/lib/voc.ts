@@ -10,3 +10,14 @@ export function calcularQualidadeVOC(voc: number | null | undefined) {
   return { texto: "Ruim", percentual: 20, faixa: "ruim" as const };
 }
 
+export function calcularVocPpm(voc_kohm: number | null | undefined, r0_clean_air: number = 50.0): number | null {
+  if (typeof voc_kohm !== "number" || !Number.isFinite(voc_kohm)) return null;
+  if (voc_kohm <= 0) return null;
+  const r0 = Number(r0_clean_air);
+  if (!Number.isFinite(r0) || r0 <= 0) return null;
+  const ratio = r0 / voc_kohm;
+  const ppm = 0.5 * Math.pow(ratio, 2.0);
+  if (!Number.isFinite(ppm)) return null;
+  return Math.max(ppm, 0.1);
+}
+

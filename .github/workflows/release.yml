@@ -66,4 +66,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DashboardArduino-release-artifacts
-          path: release/**
+          path: release/win/**
+          if-no-files-found: warn
