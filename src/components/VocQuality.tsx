@@ -1,20 +1,36 @@
 import { motion } from "framer-motion";
 import { Leaf, AlertTriangle } from "lucide-react";
+import {
+  CartesianGrid,
+  Dot,
+  Label,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from "recharts";
 import { calcularQualidadeVOC, calcularVocPpm } from "../lib/voc";
+
+export type VocHistoryRow = {
+  ts: number;
+  label: string;
+  vocPpm: number | null;
+};
 
 function formatPpm(v: number | null | undefined) {
   if (typeof v !== "number" || !Number.isFinite(v)) return "---";
   return v.toFixed(2);
 }
 
-const FAIXAS = [
-  { nome: "Ruim", inicioPct: 0, fimPct: 25, cor: "from-red-500 to-red-400", texto: "text-red-700", marcadorPct: 25 },
-  { nome: "Moderada", inicioPct: 25, fimPct: 50, cor: "from-amber-400 to-amber-500", texto: "text-amber-700", marcadorPct: 50 },
-  { nome: "Boa", inicioPct: 50, fimPct: 75, cor: "from-lime-500 to-lime-400", texto: "text-lime-700", marcadorPct: 75 },
-  { nome: "Excelente", inicioPct: 75, fimPct: 100, cor: "from-emerald-500 to-emerald-400", texto: "text-emerald-700", marcadorPct: 100 }
-];
-
-export default function VocQuality({ voc }: { voc: number | null }) {
+export default function VocQuality({
+  voc,
+  history = []
+}: {
+  voc: number | null;
+  history?: VocHistoryRow[];
+}) {
   const q = calcularQualidadeVOC(voc);
   const ppm = calcularVocPpm(voc);
 
@@ -29,16 +45,8 @@ export default function VocQuality({ voc }: { voc: number | null }) {
             ? "bg-slate-100 text-slate-600 ring-1 ring-slate-200"
             : "bg-red-50 text-red-700 ring-1 ring-red-200";
 
-  const pointerColor =
-    q.faixa === "excelente"
-      ? "bg-emerald-600"
-      : q.faixa === "boa"
-        ? "bg-lime-600"
-        : q.faixa === "moderada"
-          ? "bg-amber-600"
-          : q.faixa === "indisponivel"
-            ? "bg-slate-400"
-            : "bg-red-600";
+  const chartRows = (history || []).slice(-180);
+  const lastIdx = Math.max(chartRows.length - 1, 0);
 
   return (
     <motion.div
@@ -53,8 +61,8 @@ export default function VocQuality({ voc }: { voc: number | null }) {
             <Leaf className="h-5 w-5" />
           </div>
           <div>
-            <div className="text-sm font-semibold text-slate-900">Qualidade do Ar / VOC (BME680)</div>
-            <div className="text-xs text-slate-500">Classificação automática</div>
+            <div className="text-sm font-semibold text-slate-900">Qualidade do Ar / PPM</div>
+            <div className="text-xs text-slate-500">Histórico em tempo real</div>
           </div>
         </div>
         <div className={`rounded-full px-3 py-1 text-[11px] font-semibold ${statusPill}`}>{q.texto}</div>
@@ -78,74 +86,114 @@ export default function VocQuality({ voc }: { voc: number | null }) {
 
       <div className="mt-5">
         <div className="flex items-center justify-between">
-          <div className="text-xs font-semibold text-slate-600">Escala de Qualidade do Ar</div>
-          <div className="text-xs text-slate-500">{q.percentual}% — {q.texto}</div>
+          <div className="text-xs font-semibold text-slate-600">Histórico (linhas marcadoras)</div>
+          <div className="text-xs text-slate-500">
+            {chartRows.length > 0
+              ? `Últimas ${chartRows.length} amostras`
+              : "Aguardando dados"}
+          </div>
         </div>
 
-        <div className="relative mt-3 h-6">
-          <div className="absolute inset-x-0 top-0 h-3 overflow-hidden rounded-full bg-slate-100 flex">
-            {FAIXAS.map((f) => (
-              <div
-                key={f.nome}
-                className={`h-full bg-gradient-to-r ${f.cor}`}
-                style={{ width: `${f.fimPct - f.inicioPct}%` }}
+        <div className="mt-3 h-56">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartRows} margin={{ top: 10, right: 16, left: 4, bottom: 0 }}>
+              <defs>
+                <linearGradient id="vocPpmStroke" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#10b981" />
+                  <stop offset="50%" stopColor="#0ea5e9" />
+                  <stop offset="100%" stopColor="#6366f1" />
+                </linearGradient>
+              </defs>
+
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.25)" vertical={false} />
+
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 11, fill: "#64748b" }}
+                axisLine={false}
+                tickLine={false}
+                minTickGap={24}
+                interval="preserveStartEnd"
               />
-            ))}
+              <YAxis
+                tick={{ fontSize: 11, fill: "#64748b" }}
+                axisLine={false}
+                tickLine={false}
+                width={42}
+                domain={[0, "auto"]}
+                allowDecimals={false}
+                label={undefined as unknown as Label}
+              />
+
+              <Tooltip
+                contentStyle={{
+                  borderRadius: 16,
+                  border: "1px solid rgba(148,163,184,0.35)",
+                  boxShadow: "0 10px 25px rgba(15,23,42,0.12)",
+                  fontSize: 12
+                }}
+                formatter={(v: unknown) => [
+                  typeof v === "number" && Number.isFinite(v)
+                    ? `${v.toFixed(2)} ppm`
+                    : "---",
+                  "Concentração (ppm)"
+                ]}
+                labelFormatter={(l: string | number) => `Horário ${l}`}
+              />
+
+              <Line
+                type="monotone"
+                dataKey="vocPpm"
+                name="Concentração (ppm)"
+                stroke="url(#vocPpmStroke)"
+                strokeWidth={2.4}
+                connectNulls
+                isAnimationActive
+                animationDuration={450}
+                dot={(props: any) => {
+                  const { cx, cy, index, payload } = props;
+                  const isLast = payload && index === lastIdx && chartRows.length > 0;
+                  const periodic = payload && index > 0 && index % 30 === 0;
+                  if (isLast) {
+                    return (
+                      <g key={`voc-last-${index}`}>
+                        <circle cx={cx} cy={cy} r={6} fill="rgba(16,185,129,0.18)" />
+                        <circle cx={cx} cy={cy} r={3.6} fill="#10b981" stroke="#fff" strokeWidth={2} />
+                      </g>
+                    );
+                  }
+                  if (periodic) {
+                    return (
+                      <Dot
+                        key={`voc-marker-${index}`}
+                        cx={cx}
+                        cy={cy}
+                        r={2.2}
+                        fill="rgba(99,102,241,0.85)"
+                        stroke="#fff"
+                        strokeWidth={1.2}
+                      />
+                    );
+                  }
+                  return <Dot key={`voc-dot-${index}`} r={0} />;
+                }}
+                activeDot={{ r: 5, fill: "#0ea5e9", stroke: "#fff", strokeWidth: 2 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="mt-1 flex items-center justify-between px-1">
+          <div className="flex items-center gap-2 text-[10px] text-slate-500">
+            <span className="inline-block h-2 w-4 rounded bg-gradient-to-r from-emerald-500 via-sky-500 to-indigo-500" />
+            Marcadores periódicos (a cada 30 amostras)
           </div>
-
-          {FAIXAS.slice(0, 3).map((f) => (
-            <div
-              key={`marker-${f.nome}`}
-              className="absolute top-0 h-3 w-px bg-white/80 shadow-sm"
-              style={{ left: `${f.marcadorPct}%` }}
-            />
-          ))}
-
-          <div className="absolute inset-x-0 top-3 h-3 flex">
-            {FAIXAS.map((f) => (
-              <div
-                key={`label-${f.nome}`}
-                className={`h-full text-[10px] font-semibold flex items-center justify-center ${f.texto}`}
-                style={{ width: `${f.fimPct - f.inicioPct}%` }}
-              >
-                {f.nome}
-              </div>
-            ))}
+          <div className="flex items-center gap-2 text-[10px] text-slate-500">
+            <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-emerald-100" />
+            Marcador do último valor
           </div>
-
-          {FAIXAS.slice(0, 3).map((f) => (
-            <div
-              key={`tick-${f.nome}`}
-              className="absolute bottom-0 w-px h-2 bg-slate-300"
-              style={{ left: `${f.marcadorPct}%` }}
-            />
-          ))}
-
-          <div
-            className="absolute bottom-0 text-[9px] font-medium text-slate-400"
-            style={{ left: 0, transform: "translateX(0)" }}
-          >0%</div>
-          <div
-            className="absolute bottom-0 text-[9px] font-medium text-slate-400"
-            style={{ left: "50%", transform: "translateX(-50%)" }}
-          >50%</div>
-          <div
-            className="absolute bottom-0 text-[9px] font-medium text-slate-400"
-            style={{ left: "100%", transform: "translateX(-100%)" }}
-          >100%</div>
-
-          <motion.div
-            initial={false}
-            animate={{ left: `${q.percentual}%` }}
-            transition={{ type: "spring", stiffness: 180, damping: 18 }}
-            className="absolute top-0 -translate-x-1/2 pointer-events-none"
-          >
-            <div className={`h-4 w-4 rounded-full ring-4 ring-white shadow-soft ${pointerColor}`} />
-            <div className={`mt-0.5 mx-auto h-3 w-px ${pointerColor}`} />
-          </motion.div>
         </div>
       </div>
     </motion.div>
   );
 }
-

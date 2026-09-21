@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import Header from "./components/Header";
 import ThermocoupleCard from "./components/ThermocoupleCard";
 import EnvCard from "./components/EnvCard";
-import VocQuality from "./components/VocQuality";
+import VocQuality, { type VocHistoryRow } from "./components/VocQuality";
 import HistoryChart, { type HistoryRow } from "./components/HistoryChart";
 import SerialConsole from "./components/SerialConsole";
 import Footer from "./components/Footer";
@@ -198,6 +198,15 @@ export default function App() {
     }));
   }, [history]);
 
+  const vocHistoryRows: VocHistoryRow[] = useMemo(() => {
+    const sliced = history.slice(-180);
+    return sliced.map((p) => ({
+      ts: p.ts,
+      label: formatTimeLabel(p.ts),
+      vocPpm: typeof p.vocPpm === "number" && Number.isFinite(p.vocPpm) ? p.vocPpm : null
+    }));
+  }, [history]);
+
   void calcularQualidadeVOC;
 
   return (
@@ -295,7 +304,7 @@ export default function App() {
               </div>
 
               <div className="mt-6">
-                <VocQuality voc={latest?.voc ?? null} />
+                <VocQuality voc={latest?.voc ?? null} history={vocHistoryRows} />
               </div>
             </div>
 
