@@ -1,11 +1,6 @@
 import { motion } from "framer-motion";
-import { Leaf, Waves, AlertTriangle, Info } from "lucide-react";
+import { Leaf, AlertTriangle } from "lucide-react";
 import { calcularQualidadeVOC, calcularVocPpm } from "../lib/voc";
-
-function formatVoc(v: number | null | undefined) {
-  if (typeof v !== "number" || !Number.isFinite(v)) return "---";
-  return Math.round(v).toString();
-}
 
 function formatPpm(v: number | null | undefined) {
   if (typeof v !== "number" || !Number.isFinite(v)) return "---";
@@ -13,10 +8,10 @@ function formatPpm(v: number | null | undefined) {
 }
 
 const FAIXAS = [
-  { nome: "Ruim", inicioPct: 0, fimPct: 25, cor: "from-red-500 to-red-400", texto: "text-red-700", bg: "bg-red-50", ring: "ring-red-200", marcadorPct: 25 },
-  { nome: "Moderada", inicioPct: 25, fimPct: 50, cor: "from-amber-400 to-amber-500", texto: "text-amber-700", bg: "bg-amber-50", ring: "ring-amber-200", marcadorPct: 50 },
-  { nome: "Boa", inicioPct: 50, fimPct: 75, cor: "from-lime-500 to-lime-400", texto: "text-lime-700", bg: "bg-lime-50", ring: "ring-lime-200", marcadorPct: 75 },
-  { nome: "Excelente", inicioPct: 75, fimPct: 100, cor: "from-emerald-500 to-emerald-400", texto: "text-emerald-700", bg: "bg-emerald-50", ring: "ring-emerald-200", marcadorPct: 100 }
+  { nome: "Ruim", inicioPct: 0, fimPct: 25, cor: "from-red-500 to-red-400", texto: "text-red-700", marcadorPct: 25 },
+  { nome: "Moderada", inicioPct: 25, fimPct: 50, cor: "from-amber-400 to-amber-500", texto: "text-amber-700", marcadorPct: 50 },
+  { nome: "Boa", inicioPct: 50, fimPct: 75, cor: "from-lime-500 to-lime-400", texto: "text-lime-700", marcadorPct: 75 },
+  { nome: "Excelente", inicioPct: 75, fimPct: 100, cor: "from-emerald-500 to-emerald-400", texto: "text-emerald-700", marcadorPct: 100 }
 ];
 
 export default function VocQuality({ voc }: { voc: number | null }) {
@@ -65,31 +60,18 @@ export default function VocQuality({ voc }: { voc: number | null }) {
         <div className={`rounded-full px-3 py-1 text-[11px] font-semibold ${statusPill}`}>{q.texto}</div>
       </div>
 
-      <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200/60">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
-            <Waves className="h-4 w-4" />
-            Resistência de Gás
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <div className="text-3xl font-semibold tracking-tight text-slate-900">{formatVoc(voc)}</div>
-            <div className="text-sm font-medium text-slate-500">kΩ</div>
-          </div>
-          <div className="mt-1 text-xs text-slate-500">Indicador bruto do sensor MOX</div>
-        </div>
-
+      <div className="mt-5 grid grid-cols-1 gap-3">
         <div className="rounded-3xl bg-emerald-50 p-4 ring-1 ring-emerald-200/60">
           <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700">
             <AlertTriangle className="h-4 w-4" />
-            Concentração Estimada
+            Concentração
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <div className="text-3xl font-semibold tracking-tight text-emerald-900">{formatPpm(ppm)}</div>
             <div className="text-sm font-medium text-emerald-700">ppm</div>
           </div>
-          <div className="mt-1 flex items-center gap-1 text-xs text-emerald-600/80" title="Estimativa calculada a partir da resistência de gás do BME680. A leitura exata de gases específicos requer sensor NDIR/PID calibrado.">
-            <Info className="h-3 w-3" />
-            <span>Estimativa TVOC (não certificado)</span>
+          <div className="mt-1 text-xs text-emerald-600/80">
+            Indicador bruto de ppm
           </div>
         </div>
       </div>
@@ -102,7 +84,7 @@ export default function VocQuality({ voc }: { voc: number | null }) {
 
         <div className="relative mt-3 h-6">
           <div className="absolute inset-x-0 top-0 h-3 overflow-hidden rounded-full bg-slate-100 flex">
-            {FAIXAS.map((f, i) => (
+            {FAIXAS.map((f) => (
               <div
                 key={f.nome}
                 className={`h-full bg-gradient-to-r ${f.cor}`}
@@ -161,22 +143,6 @@ export default function VocQuality({ voc }: { voc: number | null }) {
             <div className={`h-4 w-4 rounded-full ring-4 ring-white shadow-soft ${pointerColor}`} />
             <div className={`mt-0.5 mx-auto h-3 w-px ${pointerColor}`} />
           </motion.div>
-        </div>
-      </div>
-
-      <div className="mt-6 rounded-3xl bg-slate-900 p-4 text-white shadow-soft">
-        <div className="text-xs font-semibold text-white/80">Índice de Qualidade do Ar</div>
-        <div className="mt-2 text-2xl font-semibold tracking-tight">{q.texto}</div>
-        <div className="mt-1 text-xs text-white/70">
-          {q.faixa === "excelente"
-            ? "Ar limpo e seguro"
-            : q.faixa === "boa"
-              ? "Condições estáveis"
-              : q.faixa === "moderada"
-                ? "Atenção: ventilação recomendada"
-                : q.faixa === "indisponivel"
-                  ? "Aguardando leitura do BME680"
-                  : "Alerta: qualidade baixa"}
         </div>
       </div>
     </motion.div>
