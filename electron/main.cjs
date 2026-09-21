@@ -788,7 +788,18 @@ function getWindowIconPath() {
 }
 
 function configureAutoUpdater() {
-  if (!autoUpdater || !app.isPackaged || process.platform !== "win32") return;
+  if (!autoUpdater) {
+    console.log("[Auto-Update] Desativado: módulo electron-updater indisponível (falha no require).");
+    return;
+  }
+  if (!app.isPackaged) {
+    console.log("[Auto-Update] Desativado: MODO DESENVOLVIMENTO (app.isPackaged=false). Para testar atualizações, build e execute o .exe final (build:win).");
+    return;
+  }
+  if (process.platform !== "win32") {
+    console.log(`[Auto-Update] Desativado: plataforma não suportada (${process.platform}). Apenas Windows x64.`);
+    return;
+  }
 
   try {
     autoUpdater.autoDownload = false;
@@ -812,7 +823,15 @@ function configureAutoUpdater() {
       error && typeof error === "object" && typeof error.message === "string"
         ? error.message
         : String(error || "Erro desconhecido");
-    console.error("Falha no auto update:", errMsg);
+    console.error("[Auto-Update] Falha:", errMsg);
+  });
+
+  autoUpdater.on("checking-for-update", () => {
+    console.log(`[Auto-Update] Verificando atualizações no GitHub Eva-ltda/PAT (versão atual: ${app.getVersion()})…`);
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    console.log(`[Auto-Update] Sem atualizações. Versão atual ${app.getVersion()} já é a mais recente.`);
   });
 
   autoUpdater.on("update-available", (info) => {
@@ -863,17 +882,26 @@ function configureAutoUpdater() {
         progress && typeof progress.transferred === "number" ? progress.transferred : 0;
       if (!Number.isNaN(pct)) {
         console.log(
-          `Progresso de atualização: ${pct.toFixed(1)}%  (${formatBytes(transferred)} / ${formatBytes(total)})`
+          `[Auto-Update] Progresso: ${pct.toFixed(1)}%  (${formatBytes(transferred)} / ${formatBytes(total)})`
         );
       } else if (total > 0) {
         console.log(
-          `Baixando atualização: ${formatBytes(transferred)} / ${formatBytes(total)}`
+          `[Auto-Update] Baixando: ${formatBytes(transferred)} / ${formatBytes(total)}`
         );
       }
     } catch {}
   });
 
   autoUpdater.on("update-downloaded", (info) => {
+    try {
+      const next =
+        (info && typeof info.version === "string")
+          ? info.version
+          : (info && info.updateInfo && typeof info.updateInfo.version === "string")
+            ? info.updateInfo.version
+            : "—";
+      console.log(`[Auto-Update] Nova versão ${next} baixada. Aguardando reinício.`);
+    } catch {}
     const win = getMainWindow();
     let next = "";
     if (info) {
@@ -908,10 +936,24 @@ function configureAutoUpdater() {
 
   const checkForUpdates = () => {
     try {
-      autoUpdater.checkForUpdates().catch((error) => {
-        const msg = error && error.message ? error.message : String(error || "erro");
-        console.error("Falha ao verificar atualizações:", msg);
-      });
+      console.log(`[Auto-Update] checkForUpdates() disparado (v${app.getVersion()}).`);
+      autoUpdater.checkForUpdates()
+        .then((result) => {
+          try {
+            const has =
+              !!(
+                result &&
+                typeof result.updateInfo === "object" &&
+                result.updateInfo.version
+              );
+            const nextV = has ? result.updateInfo.version : "-";
+            console.log(`[Auto-Update] checkForUpdates() OK. Próxima versão detectada: ${nextV}.`);
+          } catch {}
+        })
+        .catch((error) => {
+          const msg = error && error.message ? error.message : String(error || "erro");
+          console.error("[Auto-Update] Falha ao verificar atualizações:", msg);
+        });
     } catch {}
   };
 
