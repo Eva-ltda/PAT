@@ -3,7 +3,6 @@ import { Leaf, AlertTriangle } from "lucide-react";
 import {
   CartesianGrid,
   Dot,
-  Label,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -122,7 +121,6 @@ export default function VocQuality({
                 width={42}
                 domain={[0, "auto"]}
                 allowDecimals={false}
-                label={undefined as unknown as Label}
               />
 
               <Tooltip
